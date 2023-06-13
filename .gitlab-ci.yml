@@ -1,0 +1,183 @@
+stages:
+  - build
+  - test
+  - staging deploy
+  - integration test
+  - prod deploy
+
+variables:
+  ms_name: $ms_name
+  ms_applicationid: $ms_applicationid
+
+
+# Job to build laravel app (to disable, define NO_BACKEND variable from UI)
+Test Build:
+  # image: registry.gitlab.com/trulymadly/tm-backend/services/tm-service-product:latest
+  stage: build
+  tags:
+    - docker-executor
+  script:
+    - 'echo "Script start: $(date +"%Y-%m-%d %T")"'
+    - echo "Compiling Test Build... setup env.test "
+    - echo $ms_name
+    - echo $CI_REGISTRY_IMAGE
+    - echo $ms_applicationid
+    - echo $CI_COMMIT_TAG
+    - echo $CI_COMMIT_SHORT_SHA
+    - echo $CI_PIPELINE_ID
+    - echo $GITLAB_USER_EMAIL
+    - echo $CI_JOB_STARTED_AT
+    - echo $NEW_RELIC_DEPLOYMENT_KEY
+  #    - composer install --no-suggest --no-interaction
+  #    - cp ~/environment/$CI_PROJECT_PATH/.env.test .env
+  #    - php artisan key:generate
+  #    - php artisan cache:clear
+  #    - php artisan config:cache
+  #    - php artisan route:cache
+  #    - php artisan migrate
+  #    - chmod -R 775 storage
+  #    - chmod -R 775 bootstrap/cache
+  artifacts:
+    paths:
+      - vendor/
+      - packages/
+      - bootstrap/cache/
+      - .env
+
+Docker Build:
+  image: docker:19.03.12
+  stage: build
+  rules:
+    - if: '($CI_COMMIT_BRANCH == "master" || $CI_COMMIT_TAG)'
+  tags:
+    - docker-executor
+  services:
+    - docker:19.03.12-dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - 'echo "Script start: $(date +"%Y-%m-%d %T")"'
+    - docker pull $CI_REGISTRY_IMAGE:latest || true
+    - docker build --cache-from $CI_REGISTRY_IMAGE:latest --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA --tag $CI_REGISTRY_IMAGE:latest .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+
+# Test jobs (require: $TESTING)
+Unit Test:
+  stage: test
+  tags:
+    
+    - docker-executor
+  script:
+    - 'echo "Script start: $(date +"%Y-%m-%d %T")"'
+    - echo "Unit Test Running..."
+#    - ./vendor/bin/phpunit  --testdox --colors=always tests --testsuite Unit
+
+Feature Test:
+  stage: test
+  tags:
+    
+    - docker-executor
+  script:
+    - 'echo "Script start: $(date +"%Y-%m-%d %T")"'
+    - echo "Feature Test Running..."
+#    - ./vendor/bin/phpunit  --testdox --colors=always tests --testsuite Feature
+
+
+deploy_to_staging_gcp:
+  stage: staging deploy
+  tags:
+    - kube-conf-runner-1
+  variables:
+    IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG
+  rules:
+    - if: '($CI_COMMIT_BRANCH == "master" || $CI_COMMIT_TAG)'
+      when: manual
+  script:
+    - 'echo "Script start: $(date +"%Y-%m-%d %T")"'
+    - kubectl config use-context gke_tm-backend_asia-south1_stage-tm-backend-gke
+    - cd ~/tm-kube-conf-gcp/tm-ds-misstm && helm upgrade --install tm-ds-misstm --set "replicaCount=1" --set "image.tag=$CI_COMMIT_SHA" --set "autoScale.isEnabled=false" --namespace staging .
+    - 'curl -X POST --data-urlencode "payload={\"channel\": \"#stage-deployments\", \"username\": \"Stage Deployments\", \"text\": \"$GITLAB_USER_LOGIN \n $CI_PIPELINE_URL \n *Commit#*\n$CI_COMMIT_TITLE \n *Branch#*\n$CI_DEFAULT_BRANCH \n *Repository#*\ntm-ds-misstm\", \"icon_emoji\": \":ghost:\"}" https://hooks.slack.com/services/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'
+
+Integration Test:
+  stage: integration test
+  tags:
+    - docker-executor
+  rules:
+    - if: '($CI_COMMIT_BRANCH == "master" || $CI_COMMIT_TAG)'
+      when: on_success
+  script:
+    - 'echo "Script start: $(date +"%Y-%m-%d %T")"'
+    - echo "Run Integration Test..."
+
+deploy_to_prod_gcp:
+  stage: prod deploy
+  tags:
+    - kube-conf-runner-1
+  variables:
+    IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+  script:
+    - kubectl config use-context gke_tm-backend_asia-south1_prod-tm-backend-gke
+    - cd ~/tm-kube-conf-gcp/tm-ds-misstm && helm upgrade --install tm-ds-misstm --set "image.tag=$CI_COMMIT_SHA" --namespace production .
+    - 'curl -X POST -H "Api-Key: ${NEW_RELIC_DEPLOYMENT_KEY}" -H "Content-Type: application/json" -d "{\"deployment\":{ \"revision\": \"$CI_COMMIT_TAG\", \"changelog\": \"Commit ID = $CI_COMMIT_SHORT_SHA\", \"description\": \"PIPELINE ID = $CI_PIPELINE_ID\", \"user\": \"$GITLAB_USER_EMAIL\", \"timestamp\": \"$CI_JOB_STARTED_AT\" }}" "https://api.newrelic.com/v2/applications/563216306/deployments.json"'
+    - 'curl -X POST --data-urlencode "payload={\"channel\": \"#prod-deployments\", \"username\": \"Prod Deployment\", \"text\": \"$GITLAB_USER_LOGIN \n $CI_PIPELINE_URL \n *Commit#*\n$CI_COMMIT_TITLE \n *TAG#*\n$CI_COMMIT_TAG \n *Repository#*\ntm-ds-misstm\", \"icon_emoji\": \":ghost:\"}" https://hooks.slack.com/services/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'
+
+
+
+# stages:
+#   # - build
+#   # - test
+#   - staging deploy
+#   - integration test
+#   - prod deploy
+
+# # build:
+# #   image: docker:latest
+# #   stage: build
+# #   rules:
+# #     - if: '($CI_COMMIT_BRANCH == "master" || $CI_COMMIT_TAG)'
+# #   tags:
+# #     - gcp
+# #   services:
+# #     - docker:19.03.12-dind
+# #   before_script:
+# #     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+# #   script:
+# #     - docker pull $CI_REGISTRY_IMAGE:latest || true
+# #     - docker build --cache-from $CI_REGISTRY_IMAGE:latest --tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA --tag $CI_REGISTRY_IMAGE:latest --build-arg USERNAME=$USERNAME --build-arg PASSWORD=$PASSWORD --build-arg NEW_RELIC_LICENSE_KEY=$NEW_RELIC_LICENSE_KEY --build-arg NEW_RELIC_DAEMON_ADDRESS=$NEW_RELIC_DAEMON_ADDRESS .
+# #     - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+# #     - docker push $CI_REGISTRY_IMAGE:latest
+
+# deploy_to_staging_gcp:
+#   stage: staging deploy
+#   tags:
+#     - kube-conf-runner-1
+#   variables:
+#     IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG
+#   rules:
+#     - if: '($CI_COMMIT_BRANCH == "master" || $CI_COMMIT_TAG)'
+#       when: on_success
+#   script:
+#     - 'echo "Script start: $(date +"%Y-%m-%d %T")"'
+#     - kubectl config use-context gke_tm-backend_asia-south1_stage-tm-backend-gke
+#     - cd ~/tm-kube-conf-gcp/tm-ds-email-phone-extract && helm upgrade --install tm-ds-email-phone-extract --set "replicaCount=1" --set "image.tag=$CI_COMMIT_SHA" --set "autoScale.isEnabled=false" --namespace staging .
+#     - 'curl -X POST --data-urlencode "payload={\"channel\": \"#stage-deployments\", \"username\": \"Stage Deployments\", \"text\": \"$GITLAB_USER_LOGIN \n $CI_PIPELINE_URL \n *Commit#*\n$CI_COMMIT_TITLE \n *Branch#*\n$CI_DEFAULT_BRANCH \n *Repository#*\ntm-ds-email-phone-extract\", \"icon_emoji\": \":ghost:\"}" https://hooks.slack.com/services/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'
+
+# deploy_to_prod_gcp:
+#   stage: prod deploy
+#   tags:
+#     - kube-conf-runner-1
+#   variables:
+#     IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG
+#   rules:
+#     - if: '$CI_COMMIT_TAG'
+#       when: manual
+#   script:
+#     - kubectl config use-context gke_tm-backend_asia-south1_prod-tm-backend-gke
+#     - cd ~/tm-kube-conf-gcp/tm-ds-email-phone-extract && helm upgrade --install tm-ds-email-phone-extract --set "image.tag=$CI_COMMIT_SHA" --namespace production .
+#     - 'curl -X POST -H "Api-Key: ${NEW_RELIC_DEPLOYMENT_KEY}" -H "Content-Type: application/json" -d "{\"deployment\":{ \"revision\": \"$CI_COMMIT_TAG\", \"changelog\": \"Commit ID = $CI_COMMIT_SHORT_SHA\", \"description\": \"PIPELINE ID = $CI_PIPELINE_ID\", \"user\": \"$GITLAB_USER_EMAIL\", \"timestamp\": \"$CI_JOB_STARTED_AT\" }}" "https://api.newrelic.com/v2/applications/563216306/deployments.json"'
+#     - 'curl -X POST --data-urlencode "payload={\"channel\": \"#prod-deployments\", \"username\": \"Prod Deployment\", \"text\": \"$GITLAB_USER_LOGIN \n $CI_PIPELINE_URL \n *Commit#*\n$CI_COMMIT_TITLE \n *TAG#*\n$CI_COMMIT_TAG \n *Repository#*\ntm-ds-email-phone-extract\", \"icon_emoji\": \":ghost:\"}" https://hooks.slack.com/services/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'
+

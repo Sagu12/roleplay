@@ -1,0 +1,7 @@
+fastapi
+fastapi-health
+uvicorn
+pydantic[dotenv]
+sentry_sdk
+newrelic
+langid
