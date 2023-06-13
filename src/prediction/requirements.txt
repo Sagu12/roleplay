@@ -1,0 +1,10 @@
+fastapi
+fastapi-health
+uvicorn
+pydantic[dotenv]
+sentry_sdk
+newrelic
+openai
+langchain
+pandas
+python-dotenv
